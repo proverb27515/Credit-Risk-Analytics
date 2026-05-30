@@ -36,13 +36,18 @@ Inspired by my experience working on data analytics at HSBC, this project applie
 
 ## Key Results
 
+Trained and evaluated on **1,345,310 loans** (80/20 stratified split).
+
 | Model | ROC-AUC | Avg Precision |
 |---|---|---|
-| Logistic Regression (baseline) | ~0.70 | ~0.45 |
-| XGBoost | ~0.74 | ~0.52 |
-| **LightGBM** | **~0.75** | **~0.53** |
+| Logistic Regression (baseline) | 0.7534 | 0.5122 |
+| XGBoost | 0.7694 | 0.5346 |
+| **LightGBM** | **0.7692** | **0.5341** |
 
-*Actual values vary by run — see notebook output.*
+**KS Statistic (LightGBM): 0.3850** — approaches the industry benchmark of 0.40
+
+![ROC Curves](fig_10_roc_curves.png)
+![SHAP Beeswarm](fig_14_shap_beeswarm.png)
 
 ---
 
@@ -73,10 +78,10 @@ These align with **Basel II credit risk weights** and **Altman Z-score** factors
 ## Methodology
 
 ```
-Raw Data (1.8M rows)
-    ↓ Filter closed loans → ~1.1M
+Raw Data (1.8M rows, 151 features)
+    ↓ Filter closed loans → 1,345,310 loans
     ↓ Drop leakage + >50% missing cols
-    ↓ Feature engineering (5 new features)
+    ↓ Feature engineering (71 features total, 5 engineered)
     ↓ Label encode categoricals
     ↓ Train/Test split (80/20, stratified)
     ↓

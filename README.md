@@ -41,13 +41,40 @@ Trained and evaluated on **1,345,310 loans** (80/20 stratified split).
 | Model | ROC-AUC | Avg Precision |
 |---|---|---|
 | Logistic Regression (baseline) | 0.7534 | 0.5122 |
-| XGBoost | 0.7694 | 0.5346 |
-| **LightGBM** | **0.7692** | **0.5341** |
+| XGBoost + Optuna | 0.7626 | 0.5257 |
+| **LightGBM + Optuna** | **0.7663** | **0.5304** |
 
-**KS Statistic (LightGBM): 0.3850** — approaches the industry benchmark of 0.40
+**KS Statistic (LightGBM): 0.3802** — approaches the industry benchmark of 0.40
 
 ![ROC Curves](fig_10_roc_curves.png)
 ![SHAP Beeswarm](fig_14_shap_beeswarm.png)
+
+---
+
+## Model Selection Rationale
+
+Three models were chosen to tell a progression story across interpretability, accuracy, and scalability:
+
+| Model | Why chosen |
+|---|---|
+| **Logistic Regression** | Industry baseline for credit scoring; aligns with traditional bank scorecards and is favored by regulators for its interpretability. Establishes a performance floor. |
+| **XGBoost** | Industry-standard gradient boosting for tabular data; handles missing values natively and is widely used in Kaggle credit risk competitions. Chosen to test the upper bound of tree-ensemble performance. |
+| **LightGBM** | Leaf-wise splitting strategy makes it significantly faster than XGBoost on datasets >1M rows. On our 1.34M-loan dataset, it trains in a fraction of the time with comparable AUC — a critical practical advantage in production environments. |
+
+---
+
+## Hyperparameter Tuning
+
+Hyperparameters for XGBoost and LightGBM were optimized using **Optuna** (Bayesian optimization with TPE sampler), rather than manual selection or grid search.
+
+**Approach:**
+- Search space: 10% stratified subsample of training data (~107K loans) for speed
+- 50 trials per model, maximizing ROC-AUC on an 80/20 holdout within the subsample
+- Best parameters then applied to retrain on the **full 1.07M-loan training set**
+
+**Parameters tuned:** `n_estimators`, `max_depth`, `learning_rate`, `subsample`, `colsample_bytree`, `reg_alpha`, `reg_lambda`, plus model-specific params (`min_child_weight`, `gamma` for XGBoost; `num_leaves`, `min_child_samples` for LightGBM).
+
+This approach reflects real-world ML workflows where full-data grid search is computationally prohibitive.
 
 ---
 

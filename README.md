@@ -25,8 +25,8 @@ The model addresses three practical goals:
 | Source | [Lending Club Loan Data — Kaggle](https://www.kaggle.com/datasets/wordsforthewise/lending-club) |
 | Period | 2007 Q1 – 2018 Q4 |
 | Raw rows | ~1.8M loans, 151 features |
-| After filtering | Closed loans only (Fully Paid + Charged Off): **1,345,310 loans** |
-| Default rate | 19.96% — moderate class imbalance |
+| After filtering | Closed loans only (Fully Paid + Charged Off): **1,348,059 loans** |
+| Default rate | 19.98% — moderate class imbalance |
 | Target | `1` = Charged Off (default), `0` = Fully Paid |
 
 ---
@@ -103,21 +103,22 @@ Hyperparameters were optimized using **Optuna** (Bayesian optimization, TPE samp
 
 ### Results
 
-Evaluated on a held-out test set of **269,062 loans** (20%, stratified).
+Evaluated on **225,611 loans originated in 2017–2018** (out-of-time holdout) — the model is trained exclusively on 2007–2016 data and validated on genuinely future loans it has never seen. The test set carries a slightly higher default rate (21.28% vs 19.72% in training), reflecting Lending Club's credit quality trajectory in its late expansion phase.
 
 | Model | ROC-AUC | Avg Precision |
 |---|---|---|
-| Logistic Regression (baseline) | 0.7534 | 0.5122 |
-| XGBoost + Optuna | 0.7626 | 0.5257 |
-| **LightGBM + Optuna** | **0.7663** | **0.5304** |
+| Logistic Regression (baseline) | 0.7334 | 0.4772 |
+| XGBoost + Optuna | 0.7496 | 0.5030 |
+| **LightGBM + Optuna** | **0.7505** | **0.5045** |
 
-**KS Statistic (LightGBM): 0.3802**
+**KS Statistic (LightGBM): 0.3571**
 
 **Interpreting the numbers:**
 
-- **LR → tree model gap (+0.013 AUC)**: Confirms that credit default has non-linear structure. DTI and FICO interact with other variables in ways a linear model cannot capture.
-- **XGBoost vs LightGBM (0.004 AUC)**: Nearly identical predictive power. At this margin, **LightGBM's 3–5× training speed** is the decisive factor for any production deployment requiring frequent retraining.
-- **KS = 0.3802**: Approaches the industry benchmark of 0.40. The remaining gap suggests that additional data sources — bank transaction history, employment verification, rent payment records — could close it. This is a known limitation of public-source credit data.
+- **Out-of-time validation**: AUC is approximately 0.015–0.016 lower than random-split benchmarks — the expected cost of genuine temporal holdout. Models are evaluated on a distribution shift (different economic cycle, different underwriting vintage), not just a random sample of the same data. This produces a more honest estimate of real deployment performance.
+- **LR → tree model gap (+0.017 AUC)**: Confirms that credit default has non-linear structure. DTI and FICO interact with other variables in ways a linear model cannot capture — and this non-linearity persists out-of-time, validating that the tree models have learned genuine credit risk structure rather than overfitting the training period.
+- **XGBoost vs LightGBM (0.001 AUC)**: Essentially identical predictive power. At this margin, **LightGBM's 3–5× training speed** is the decisive factor for any production deployment requiring frequent retraining.
+- **KS = 0.3571**: A KS above 0.30 is considered acceptable in banking for consumer credit; above 0.40 is strong. The remaining gap suggests that additional data sources — bank transaction history, employment verification, rent payment records — could close it. This is a known limitation of public-source credit data.
 
 ![ROC Curves](fig_10_roc_curves.png)
 
@@ -187,14 +188,14 @@ Raw features were cleaned and augmented with five engineered variables that enco
 
 ```
 Raw Data: 1.8M rows, 151 features
-    ↓ Filter: keep Fully Paid + Charged Off → 1,345,310 loans
+    ↓ Filter: keep Fully Paid + Charged Off → 1,348,059 loans
     ↓ Drop: leakage columns, >50% missing fields, free-text
     ↓ Engineer: 5 new features (loan_to_income, installment_to_income, etc.)
     ↓ Encode: 12 categorical features via Label Encoding
     ↓ Impute: remaining NaN → column median
-    ↓ Split: 80/20 stratified train/test
+    ↓ Split: temporal — train on 2007–2016, test on 2017–2018 (out-of-time validation)
     ↓
-    Logistic Regression (balanced weights) → baseline AUC: 0.7534
+    Logistic Regression (balanced weights) → baseline AUC: 0.7334
     Optuna (50 trials, TPE, 10% subsample) → XGBoost best params
     Optuna (50 trials, TPE, 10% subsample) → LightGBM best params
     ↓ Retrain both on full training set with best params

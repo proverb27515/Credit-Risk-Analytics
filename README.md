@@ -168,6 +168,43 @@ Longer credit history reduces default probability. The economic mechanism is a *
 
 ---
 
+## Optimal Decision Threshold
+
+A model score is not a lending decision. Converting probabilities into approve/reject decisions requires choosing a threshold — and the choice of threshold is a **business optimization problem**, not a statistical one.
+
+The default 0.5 threshold implicitly assumes that misclassifying a good borrower (False Positive) costs the same as misclassifying a bad borrower (False Negative). In consumer credit, this is incorrect by a wide margin:
+
+| Error type | Business consequence | Estimated cost |
+|---|---|---|
+| False Negative (approve bad loan) | Default loss after recovery | avg **$13,628** per loan |
+| False Positive (reject good loan) | Foregone interest income | avg **$3,594** per loan |
+| **Implied cost ratio** | | **3.8× — FN far more costly** |
+
+We sweep all thresholds from 0.01 to 0.99 and compute the expected portfolio P&L at each cutoff using actual `loan_amnt` and `int_rate` from the 2017–2018 test set (225,611 loans). The P&L formula per threshold *t*:
+
+```
+P&L(t) = Σ profit_i  [approved & actually good]
+        − Σ loss_i   [approved & actually bad]
+```
+
+![Profit Curve](fig_18_profit_curve.png)
+
+**Results:**
+
+| Threshold | Portfolio P&L | Approval Rate |
+|---|---|---|
+| Approve all (no model) | −$16.1M | 100% |
+| Default t = 0.50 | $101.1M | ~75% |
+| **Optimal t\* = 0.538** | **$104.1M** | **69.5%** |
+
+The optimal threshold is **t\* = 0.538** — slightly above 0.5, reflecting the asymmetric cost structure. At this cutoff, 69.5% of applicants are approved, and the model generates **$3.0M more** than the 0.5 baseline on this test cohort alone. Against the naïve approve-all strategy, the model adds **$120.2M** in avoided losses.
+
+![Threshold Comparison](fig_19_optimal_confusion.png)
+
+At t\* = 0.538, the model improves overall accuracy from 70% to 73% and better balances precision and recall across both classes — the practical result of aligning the decision boundary with real economic costs rather than the arbitrary midpoint of the probability scale.
+
+---
+
 ## Feature Engineering
 
 Raw features were cleaned and augmented with five engineered variables that encode economic relationships:

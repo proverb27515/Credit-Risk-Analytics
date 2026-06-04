@@ -205,6 +205,58 @@ At t\* = 0.538, the model improves overall accuracy from 70% to 73% and better b
 
 ---
 
+## Probability Calibration
+
+A model that ranks borrowers well (high AUC) does not necessarily produce well-calibrated probabilities. Calibration asks: *when the model predicts "30% default risk," do approximately 30% of those borrowers actually default?*
+
+| Metric | Value | Interpretation |
+|---|---|---|
+| Brier Score | 0.1933 | Mean squared error of probability forecasts |
+| Naive baseline | 0.1675 | Brier score of always predicting the base rate (21.3%) |
+| Brier Skill Score | −0.15 | Model probabilities are **less accurate** than the baseline |
+
+![Calibration Curve](fig_20_calibration.png)
+
+The negative Brier Skill Score reveals that while the model **discriminates** well between good and bad borrowers (AUC = 0.75), its **predicted probabilities are inflated** — a known side effect of `class_weight='balanced'`, which pushes predicted scores higher to compensate for class imbalance. The model ranks correctly but overstates default probability in absolute terms.
+
+**Production implication**: For rank-ordering and threshold-based decisions (approve/reject), AUC is the correct metric and the model performs well. For **risk-based pricing** — where the raw probability directly determines the interest rate charged — a calibration step (Platt scaling or isotonic regression) would be required before deployment to ensure the P&L calculations reflect true default rates.
+
+---
+
+## Fairness & Disparate Impact Analysis
+
+US credit regulation (ECOA, Fair Housing Act) prohibits lending models that produce **disparate impact** on protected groups. We apply the **EEOC 80% rule**: a group with an approval rate below 80% of the best-approved group's rate is flagged — then cross-validated against actual default rates to distinguish risk-driven rejection from unjustified disparity.
+
+![Fairness Analysis](fig_21_fairness.png)
+
+| Purpose | Approval Rate | Default Rate | DI Ratio | Assessment |
+|---|---|---|---|---|
+| car | 82.4% | 15.5% | 1.00 (ref) | Low risk, high approval |
+| credit_card | 75.3% | 18.4% | 0.91 | Acceptable |
+| **debt_consolidation** | **65.7%** | **22.3%** | **0.80** | Borderline — warrants monitoring |
+| **small_business** | **48.9%** | **36.1%** | **0.59** | Below DI threshold, but justified |
+
+**Key finding**: `small_business` falls below the 0.80 DI threshold (approval rate 48.9% vs 82.4% for car loans), but its actual default rate is **36.1% — more than twice the portfolio average**. The disparity is **risk-driven, not arbitrary**: the model is correctly identifying that small business loans carry substantially higher credit risk, consistent with SBA data showing ~50% of small businesses fail within 5 years.
+
+`debt_consolidation` (DI = 0.80, borderline) merits monitoring: its default rate (22.3%) is near the portfolio average, yet approval rates are lower. This may reflect correlated risk factors (e.g., high DTI) that the model correctly penalizes, but should be reviewed against protected-class proxies in a full fair lending audit.
+
+---
+
+## Feature Distribution Drift (PSI)
+
+**Population Stability Index (PSI)** is the banking industry standard for monitoring whether a deployed model's input features have shifted between training and scoring windows — a prerequisite for knowing when to retrain.
+
+![Feature Drift](fig_22_feature_drift.png)
+
+All 15 top SHAP features show **PSI < 0.10** (stable), with the highest being `mo_sin_old_rev_tl_op` at 0.090. This indicates that the 2017–2018 borrower population observable characteristics are statistically similar to the 2007–2016 training population.
+
+**Implications**:
+- The OOT performance decline (AUC 0.75 vs ~0.77 on random split) is attributable to **economic and policy changes** in the lending environment, not feature distribution drift
+- The model does not require immediate retraining due to feature shift — the degradation is structural (different vintage, credit cycle) rather than distributional
+- In production, PSI monitoring would be automated on a monthly basis; the PSI = 0.25 threshold would trigger a retraining decision
+
+---
+
 ## Feature Engineering
 
 Raw features were cleaned and augmented with five engineered variables that encode economic relationships:

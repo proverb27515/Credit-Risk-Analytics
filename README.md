@@ -1,17 +1,48 @@
 # Credit Risk Prediction — Lending Club (2007–2018)
 
 Predicting consumer loan default on **1.34 million real loan records** using interpretable machine learning.  
-**Stack**: Python · XGBoost · LightGBM · Optuna · SHAP · Scikit-learn · Pandas · Matplotlib
+**Stack**: Python · LightGBM · XGBoost · Optuna · SHAP · Scikit-learn · Streamlit · Pandas · Matplotlib
 
 ---
 
-## Business Context
+## Key Findings
 
-The 2008 Global Financial Crisis demonstrated the systemic cost of mispriced credit risk. In its aftermath, regulators (Basel III, Dodd-Frank) and lenders alike shifted toward data-driven underwriting — replacing static rules with models that can price risk at the individual borrower level.
+> Results from the **2017–2018 out-of-time holdout** (225,611 loans the model never saw during training):
 
-This project builds a **pre-origination credit default model** using Lending Club's public loan data. Every feature used is available *at the time of application* — no post-disbursement payment behavior is used, ensuring the model is deployment-realistic.
+- **LightGBM ROC-AUC 0.7505 / KS 0.3571** on genuine future data — model discriminates good borrowers from bad across all operating thresholds, not just at a fixed cutoff
+- **Optimal threshold t\* = 0.538** generates **$104.1M portfolio P&L** vs −$16.1M for approve-all and $101.1M for the default t = 0.50 — business value maximization adds $3M over the naïve threshold on a single cohort
+- **SHAP confirms economically meaningful structure**: FICO tiers align precisely with Basel II / Dodd-Frank regulatory thresholds; DTI risk accelerates at 43%, matching the Qualified Mortgage rule; interest rate encodes adverse selection (Stiglitz & Weiss, 1981)
+- **Fairness audit (EEOC 80% rule)**: small_business lower approval (48.9%) is risk-justified by 36.1% actual default rate — no unjustified disparate impact detected; debt_consolidation (DI = 0.80) flagged for monitoring
+- **PSI monitoring**: all 15 top SHAP features stable (PSI < 0.10) in 2017–2018 — OOT performance decline is economic/policy structural shift, not feature drift
 
-The model addresses three practical goals:
+---
+
+## Interactive Demo (Streamlit)
+
+The pre-trained model (`lgbm_model.pkl`) is included in the repo — no dataset download or retraining required:
+
+```bash
+git clone https://github.com/proverb27515/credit_risk_lending.git
+cd credit_risk_lending
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+Enter loan amount, interest rate, FICO score, DTI, and other borrower details. The app returns:
+- **Approve / Decline** decision at t\* = 0.538
+- Probability gauge with threshold marker
+- Risk tier (Low / Medium / High / Very High)
+- **SHAP waterfall** showing the top 10 features driving that individual prediction
+
+---
+
+## Business Problem
+
+The 2008 Global Financial Crisis demonstrated the systemic cost of mispriced credit risk. In its aftermath, regulators (Basel III, Dodd-Frank) and lenders shifted toward data-driven underwriting — replacing static rules with models that price risk at the individual borrower level.
+
+This project builds a **pre-origination credit default model** using Lending Club's public loan data. Every feature is available *at the time of application* — no post-disbursement payment behavior is used, ensuring the model is deployment-realistic.
+
+Three practical goals:
 1. **Discriminate** good borrowers from bad before a loan is issued
 2. **Interpret** predictions using SHAP to satisfy regulatory explainability requirements
 3. **Validate** model logic against established economic theory — confirming the model has learned real credit risk structure, not statistical artifacts
@@ -31,13 +62,68 @@ The model addresses three practical goals:
 
 ---
 
-## EDA: What Drives Default?
+## Methodology
 
-### The Class Imbalance Problem
+```
+Raw Data: 1.8M rows, 151 features
+    ↓ Filter: keep Fully Paid + Charged Off → 1,348,059 loans
+    ↓ Drop: leakage columns, >50% missing fields, free-text
+    ↓ Engineer: 5 new features (loan_to_income, installment_to_income, etc.)
+    ↓ Encode: 12 categorical features via Label Encoding
+    ↓ Impute: remaining NaN → column median
+    ↓ Split: temporal — train on 2007–2016 (1,122,448), test on 2017–2018 (225,611)
+    ↓
+    Logistic Regression (balanced weights) → baseline AUC: 0.7334
+    Optuna (50 trials, TPE, 10% subsample) → XGBoost best params
+    Optuna (50 trials, TPE, 10% subsample) → LightGBM best params
+    ↓ Retrain both on full training set with best params
+    ↓
+    SHAP TreeExplainer → global importance (beeswarm) + dependence plots
+    KS Statistic → banking-standard score separation metric
+    Optimal threshold → expected portfolio P&L maximization
+    Fairness audit → EEOC 80% disparate impact rule
+    PSI → feature drift monitoring across train/test windows
+```
+
+### Why These Three Models
+
+| Model | Rationale |
+|---|---|
+| **Logistic Regression** | The traditional credit scorecard model. Interpretable, auditable, preferred by regulators under Basel II. Sets a principled performance baseline. |
+| **XGBoost** | Captures non-linear risk interactions that logistic regression cannot (e.g., DTI risk is convex above a threshold). Handles missing values natively. Industry standard for tabular credit data. |
+| **LightGBM** | Leaf-wise splitting is 3–5× faster than XGBoost on 1M+ rows with comparable AUC. In production, retraining frequency is an engineering constraint — LightGBM's speed is a real operational consideration. |
+
+### Hyperparameter Tuning with Optuna
+
+Bayesian optimization (TPE sampler), 50 trials per model, search on 10% subsample (~107K loans) to reduce runtime from hours to minutes. Best parameters then applied to the full 1.07M-loan training set for final evaluation.
+
+**Parameters tuned**: `n_estimators`, `max_depth`, `learning_rate`, `subsample`, `colsample_bytree`, `reg_alpha`, `reg_lambda` + model-specific: `min_child_weight`, `gamma` (XGBoost); `num_leaves`, `min_child_samples` (LightGBM).
+
+---
+
+## Feature Engineering
+
+Raw features cleaned and augmented with five engineered variables:
+
+| Feature | Construction | Economic rationale |
+|---|---|---|
+| `loan_to_income` | `loan_amnt / (annual_inc + 1)` | Leverage ratio — obligation size relative to annual earnings |
+| `installment_to_income` | `installment / (annual_inc / 12 + 1)` | Monthly cash flow burden — more direct repayment stress measure than DTI alone |
+| `credit_history_months` | Months from `earliest_cr_line` to `issue_d` | Duration of demonstrated credit management |
+| `term_months` | Parsed from `term` string | Numeric loan duration (36 or 60 months) |
+| `emp_length_yrs` | Parsed from `emp_length` string | Income stability proxy |
+
+**Dropped features**: 18 post-origination columns (payment history, recovery amounts) to prevent target leakage; 40+ joint application fields (>50% missing); free-text fields (url, desc, emp_title).
+
+---
+
+## EDA: Key Patterns
+
+### Class Imbalance
 
 ![Class Distribution](fig_01_class_distribution.png)
 
-~20% of closed loans were charged off. This moderate imbalance guided key modeling decisions: `scale_pos_weight` in XGBoost, `class_weight='balanced'` in LightGBM, and the use of **ROC-AUC and Average Precision** — rather than accuracy — as evaluation metrics (accuracy is misleading when classes are unequal).
+~20% of closed loans were charged off. This moderate imbalance guided key modeling decisions: `scale_pos_weight` in XGBoost, `class_weight='balanced'` in LightGBM, and the use of **ROC-AUC and Average Precision** over accuracy as evaluation metrics.
 
 ---
 
@@ -45,17 +131,13 @@ The model addresses three practical goals:
 
 ![Default Rate Over Time](fig_02_default_rate_over_time.png)
 
-The chart starts from 2009 because 2007 (603 loans) and 2008 (2,393 loans) represent negligible volume compared to peak years (400K+) and would be invisible on the same scale. Lending Club launched in May 2007 and only reached statistical significance from 2009 onward.
+The chart shows observed default rates among **closed loans only** (Fully Paid or Charged Off), which introduces **vintage truncation bias**:
 
-The chart shows **observed default rates among closed loans only** (Fully Paid or Charged Off). This introduces a critical data construction effect — **vintage truncation bias** — that must be understood to read the chart correctly:
+- **2016–2017 show the highest observed rates (23%)** — the dataset ends Q4 2018, so still-performing 2016–2017 loans have not closed and are absent from the denominator. Closed loans from these vintages are disproportionately early defaulters, inflating the observed rate.
+- **2009–2011 rates (14–15%) reflect true seasoned defaults** — by 2018, virtually all those loans had resolved, making the denominator complete.
+- **2018 (15.7%) is artificially low** for the same truncation reason.
 
-- **2016–2017 show the highest observed rates (23%)**, but this is partly an artifact: the dataset ends in Q4 2018, so the majority of 2016–2017 loans that are *still performing* have not yet closed and are absent from the denominator. The closed loans from these vintages are disproportionately early defaulters, inflating the observed rate.
-- **2009–2011 rates (14–15%) reflect the true seasoned default rate** for those cohorts — by 2018, virtually all loans from those vintages had fully resolved, so the denominator is complete.
-- **2018 (15.7%) is artificially low** for the same truncation reason: only fast defaulters have closed; the good loans haven't matured yet.
-
-The genuine takeaway: for **fully seasoned vintages**, default rates were relatively stable at 14–20% throughout the platform's history. The late-vintage spike is a dataset artifact, not evidence that 2016 borrowers were dramatically riskier than 2009 borrowers.
-
-This carries an important modeling implication: our temporal split (train 2007–2016, test 2017–2018) means the test set includes loans that are still partially seasoning. The model's true out-of-time performance on fully resolved 2017–2018 cohorts would only be measurable with data beyond Q4 2018.
+For **fully seasoned vintages**, default rates were relatively stable at 14–20% throughout the platform's history. The late-vintage spike is a dataset artifact.
 
 ---
 
@@ -63,9 +145,7 @@ This carries an important modeling implication: our temporal split (train 2007�
 
 ![Grade Analysis](fig_03_grade_analysis.png)
 
-Lending Club's internal grade system (A = lowest risk → G = highest) correctly ranks default rates from ~5% (Grade A) to ~35% (Grade G). The monotonic increase validates the grade system's directional accuracy.
-
-However, even Grade A carries a ~5% default rate — and Grade B (~10%) still represents substantial risk for a lender at scale. This demonstrates that **the grade system alone is insufficient** for fine-grained risk pricing. A borrower-level model that captures within-grade variation is exactly where machine learning adds value over traditional scorecard approaches.
+Grade A → G correctly ranks default rates from ~5% to ~35%. However, even Grade A carries ~5% default risk — a borrower-level model capturing within-grade variation is exactly where ML adds value over traditional scorecards.
 
 ---
 
@@ -73,43 +153,17 @@ However, even Grade A carries a ~5% default rate — and Grade B (~10%) still re
 
 ![Purpose vs Default Rate](fig_05_purpose_default.png)
 
-Loan purpose is a strong categorical risk signal:
+- **Small business loans** carry the highest default rate (~27%), consistent with U.S. SBA data showing ~50% of small businesses fail within 5 years
+- **Debt consolidation** — the most common purpose — sits near average, reflecting a heterogeneous borrower pool
+- **Credit card refinancing** shows relatively lower risk, likely due to self-selection by credit-aware borrowers
 
-- **Small business loans** carry the highest default rate (~27%), consistent with U.S. SBA data showing roughly 50% of small businesses fail within 5 years. Credit extended to businesses inherits the business's survival risk.
-- **Debt consolidation** — the most common purpose — sits near the average, reflecting a heterogeneous pool of borrowers.
-- **Credit card refinancing** borrowers show relatively lower risk, likely due to self-selection: only credit-aware borrowers seek to consolidate high-rate balances at lower rates.
-
-This pattern illustrates **adverse selection by loan purpose**: borrowers with the most urgent need for credit (small business, medical) are systematically higher risk.
+This illustrates **adverse selection by loan purpose**: borrowers with the most urgent credit need are systematically higher risk.
 
 ---
 
-## Modeling
+## Model Results
 
-### Why These Three Models
-
-Three models were selected to represent a deliberate progression from interpretability to predictive power:
-
-| Model | Rationale |
-|---|---|
-| **Logistic Regression** | The traditional credit scorecard model. Interpretable, auditable, and preferred by regulators under Basel II. Sets a principled performance baseline — any gain from more complex models must be justified against this floor. |
-| **XGBoost** | Captures non-linear risk interactions that logistic regression cannot (e.g., DTI risk is convex — low DTI is safe, but risk accelerates disproportionately above a threshold). Handles missing values natively. Industry standard for tabular credit data. |
-| **LightGBM** | Leaf-wise splitting is 3–5× faster than XGBoost on datasets with 1M+ rows, with comparable AUC. In production, model training and retraining frequency are engineering constraints — LightGBM's speed advantage is a real operational consideration, not just benchmark performance. |
-
-### Hyperparameter Tuning with Optuna
-
-Hyperparameters were optimized using **Optuna** (Bayesian optimization, TPE sampler) rather than manual selection or exhaustive grid search — which would be computationally prohibitive on 1.34M records.
-
-| Decision | Rationale |
-|---|---|
-| Search on 10% subsample (~107K loans) | Reduces search time from hours to minutes while preserving the training distribution |
-| 50 trials per model | TPE sampler converges efficiently; diminishing returns beyond 50 trials at this scale |
-| Retrain on full data | Best parameters from subsample search applied to the full 1.07M-loan training set for final evaluation |
-
-**Parameters tuned**: `n_estimators`, `max_depth`, `learning_rate`, `subsample`, `colsample_bytree`, `reg_alpha`, `reg_lambda` + model-specific: `min_child_weight`, `gamma` (XGBoost); `num_leaves`, `min_child_samples` (LightGBM).
-
-### Results
-
-Evaluated on **225,611 loans originated in 2017–2018** (out-of-time holdout) — the model is trained exclusively on 2007–2016 data and validated on genuinely future loans it has never seen. The test set carries a slightly higher default rate (21.28% vs 19.72% in training), reflecting Lending Club's credit quality trajectory in its late expansion phase.
+Evaluated on **225,611 loans originated 2017–2018** (out-of-time holdout). The test set carries a slightly higher default rate (21.28% vs 19.72% in training), reflecting Lending Club's credit quality trajectory in its late expansion phase.
 
 | Model | ROC-AUC | Avg Precision |
 |---|---|---|
@@ -121,81 +175,64 @@ Evaluated on **225,611 loans originated in 2017–2018** (out-of-time holdout) �
 
 **Interpreting the numbers:**
 
-- **Out-of-time validation**: AUC is approximately 0.015–0.016 lower than random-split benchmarks — the expected cost of genuine temporal holdout. Models are evaluated on a distribution shift (different economic cycle, different underwriting vintage), not just a random sample of the same data. This produces a more honest estimate of real deployment performance.
-- **LR → tree model gap (+0.017 AUC)**: Confirms that credit default has non-linear structure. DTI and FICO interact with other variables in ways a linear model cannot capture — and this non-linearity persists out-of-time, validating that the tree models have learned genuine credit risk structure rather than overfitting the training period.
-- **XGBoost vs LightGBM (0.001 AUC)**: Essentially identical predictive power. At this margin, **LightGBM's 3–5× training speed** is the decisive factor for any production deployment requiring frequent retraining.
-- **KS = 0.3571**: A KS above 0.30 is considered acceptable in banking for consumer credit; above 0.40 is strong. The remaining gap suggests that additional data sources — bank transaction history, employment verification, rent payment records — could close it. This is a known limitation of public-source credit data.
+- **OOT gap vs random-split**: AUC is ~0.015 lower than random-split benchmarks — the expected cost of genuine temporal holdout evaluating on a different economic cycle and underwriting vintage
+- **LR → tree model (+0.017 AUC)**: Confirms non-linear credit risk structure that persists out-of-time, validating that tree models learned genuine risk rather than overfitting the training period
+- **XGBoost vs LightGBM (0.001 AUC)**: Essentially identical predictive power; **LightGBM's 3–5× training speed** is the decisive factor for production deployments requiring frequent retraining
+- **KS = 0.3571**: Above 0.30 is acceptable in consumer banking; above 0.40 is strong — the remaining gap reflects the limitation of public-source data vs. proprietary bureau data
 
 ![ROC Curves](fig_10_roc_curves.png)
 
-The ROC curve shows that tree models meaningfully outperform logistic regression across all operating thresholds, not just at a single cutoff — indicating robust, structurally superior discrimination rather than threshold-specific overfitting.
+![PR Curve](fig_23_pr_curve.png)
 
 ![Score Distribution](fig_17_score_distribution.png)
 
-The score distribution confirms the model's separation power: charged-off loans (red) are assigned higher predicted default probabilities than fully-paid loans (green). The overlap region defines the irreducible error — borrowers whose observable characteristics are similar regardless of outcome.
-
 ---
 
-## Business & Economic Insights
+## Business Insights
 
-SHAP (SHapley Additive exPlanations) decomposes each prediction into the contribution of individual features, satisfying the explainability requirements that regulators increasingly demand for credit decisions.
+### SHAP: What the Model Learned
 
 ![SHAP Beeswarm](fig_14_shap_beeswarm.png)
 
-### Interest Rate: Adverse Selection in Action
+**Interest Rate — Adverse Selection in Action**
 
-Interest rate is the strongest default predictor in the model — but the mechanism is not direct causation. Lending Club **sets rates based on perceived borrower risk**, so interest rate already encodes the platform's own risk assessment. High-rate borrowers also face higher monthly burdens, increasing cash flow stress.
+Interest rate is the strongest default predictor, but the mechanism is not direct causation. Lending Club sets rates based on perceived borrower risk, so interest rate already encodes the platform's risk assessment. This reflects a classic **adverse selection loop** (Stiglitz & Weiss, 1981): riskier borrowers accept high-rate loans that lower-risk borrowers reject, confirming their riskiness.
 
-This reflects a classic **adverse selection loop** (Stiglitz & Weiss, 1981): riskier borrowers are willing to accept high-rate loans that lower-risk borrowers would reject, confirming their riskiness, which drives rates even higher. The model correctly learns this signal, but practitioners should be aware that using interest rate as a feature creates a dependency on Lending Club's internal rating — which may not be available in an independent credit model.
+**FICO Score — Validated Against Regulatory Credit Tiers**
 
-### FICO Score: Validated Against Regulatory Credit Tiers
+FICO has a strongly negative SHAP effect across all borrowers. The model's behavior aligns with established regulatory tiers:
+- FICO < 620 (subprime): Sharp SHAP spike — highest marginal risk
+- FICO 620–679 (near-prime): Transitional, moderate risk
+- FICO ≥ 720 (prime): Near-zero or negative SHAP contribution
 
-FICO has a strongly negative SHAP effect across all borrowers — higher scores reduce default probability monotonically. Crucially, the model's behavior aligns with established regulatory tiers:
+Alignment with Basel II regulatory definitions confirms the model has learned **economically meaningful credit risk structure**.
 
-- **FICO < 620** (subprime): Sharp SHAP spike — highest marginal risk
-- **FICO 620–679** (near-prime): Transitional, moderate risk
-- **FICO ≥ 720** (prime): Near-zero or negative SHAP contribution
+**DTI — Empirical Support for the Dodd-Frank Threshold**
 
-This alignment with regulatory definitions is an important model validation signal: the model has not just fit statistical patterns but has learned **economically meaningful credit risk structure**.
+Under **Dodd-Frank's Ability-to-Repay rule**, DTI > 43% is the regulatory threshold for "qualified mortgage" status. Our SHAP analysis confirms that the same threshold region is where DTI contributions to default risk accelerate — providing empirical validation of regulatory intuition using market data.
 
-### DTI: Empirical Support for the Dodd-Frank Threshold
+**Sub-Grade — The Value of Granularity**
 
-Debt-to-Income ratio is a top-3 positive risk driver. Borrowers with high DTI are stretched thin — each additional dollar of loan commitment increases the probability of cash flow failure.
+Lending Club's sub-grade (A1–G5, 35 risk buckets) carries substantial SHAP values beyond what the main grade captures. Lenders pricing only at the grade level are leaving risk information on the table.
 
-Under **Dodd-Frank's Ability-to-Repay rule**, DTI > 43% is the regulatory threshold for "qualified mortgage" status. Our SHAP analysis confirms that the same threshold region is where DTI contributions to default risk accelerate — providing empirical validation of regulatory intuition using market data rather than prescribed rules.
+**Credit History Length — A Survivorship Effect**
 
-### Sub-Grade: The Value of Granularity
-
-Lending Club's sub-grade (A1–G5, representing 35 risk buckets) carries substantial SHAP values beyond what the main grade captures. This means the **finest level of Lending Club's internal grading contains real predictive signal** — lenders who price only at the grade level are leaving risk information on the table.
-
-### Credit History Length: A Survivorship Effect
-
-Longer credit history reduces default probability. The economic mechanism is a **survivorship effect**: borrowers who have maintained credit accounts for many years without defaulting have already passed an implicit endurance test. The model correctly interprets credit history length as a proxy for demonstrated financial discipline, not merely as a demographic variable.
+Longer credit history reduces default probability through **survivorship**: borrowers who have maintained accounts for years without defaulting have passed an implicit endurance test.
 
 ---
 
-## Optimal Decision Threshold
+### Optimal Decision Threshold
 
-A model score is not a lending decision. Converting probabilities into approve/reject decisions requires choosing a threshold — and the choice of threshold is a **business optimization problem**, not a statistical one.
-
-The default 0.5 threshold implicitly assumes that misclassifying a good borrower (False Positive) costs the same as misclassifying a bad borrower (False Negative). In consumer credit, this is incorrect by a wide margin:
+A model score is not a lending decision. The default 0.5 threshold implicitly assumes False Positive (reject good borrower) costs the same as False Negative (approve bad borrower). In consumer credit, this is incorrect by 3.8×:
 
 | Error type | Business consequence | Estimated cost |
 |---|---|---|
 | False Negative (approve bad loan) | Default loss after recovery | avg **$13,628** per loan |
 | False Positive (reject good loan) | Foregone interest income | avg **$3,594** per loan |
-| **Implied cost ratio** | | **3.8× — FN far more costly** |
 
-We sweep all thresholds from 0.01 to 0.99 and compute the expected portfolio P&L at each cutoff using actual `loan_amnt` and `int_rate` from the 2017–2018 test set (225,611 loans). The P&L formula per threshold *t*:
-
-```
-P&L(t) = Σ profit_i  [approved & actually good]
-        − Σ loss_i   [approved & actually bad]
-```
+We sweep all thresholds 0.01–0.99 and compute expected portfolio P&L using actual `loan_amnt` and `int_rate` from the 2017–2018 test set:
 
 ![Profit Curve](fig_18_profit_curve.png)
-
-**Results:**
 
 | Threshold | Portfolio P&L | Approval Rate |
 |---|---|---|
@@ -203,35 +240,33 @@ P&L(t) = Σ profit_i  [approved & actually good]
 | Default t = 0.50 | $101.1M | ~75% |
 | **Optimal t\* = 0.538** | **$104.1M** | **69.5%** |
 
-The optimal threshold is **t\* = 0.538** — slightly above 0.5, reflecting the asymmetric cost structure. At this cutoff, 69.5% of applicants are approved, and the model generates **$3.0M more** than the 0.5 baseline on this test cohort alone. Against the naïve approve-all strategy, the model adds **$120.2M** in avoided losses.
+The optimal threshold is **t\* = 0.538** — slightly above 0.5, reflecting the asymmetric cost structure. Against approve-all, the model adds **$120.2M** in avoided losses on this cohort alone.
 
 ![Threshold Comparison](fig_19_optimal_confusion.png)
 
-At t\* = 0.538, the model improves overall accuracy from 70% to 73% and better balances precision and recall across both classes — the practical result of aligning the decision boundary with real economic costs rather than the arbitrary midpoint of the probability scale.
-
 ---
 
-## Probability Calibration
+### Probability Calibration
 
-A model that ranks borrowers well (high AUC) does not necessarily produce well-calibrated probabilities. Calibration asks: *when the model predicts "30% default risk," do approximately 30% of those borrowers actually default?*
+Calibration asks: *when the model predicts 30% default risk, do approximately 30% of those borrowers actually default?*
 
 | Metric | Value | Interpretation |
 |---|---|---|
 | Brier Score | 0.1933 | Mean squared error of probability forecasts |
 | Naive baseline | 0.1675 | Brier score of always predicting the base rate (21.3%) |
-| Brier Skill Score | −0.15 | Model probabilities are **less accurate** than the baseline |
+| Brier Skill Score | −0.15 | Model probabilities are less accurate than the baseline |
 
 ![Calibration Curve](fig_20_calibration.png)
 
-The negative Brier Skill Score reveals that while the model **discriminates** well between good and bad borrowers (AUC = 0.75), its **predicted probabilities are inflated** — a known side effect of `class_weight='balanced'`, which pushes predicted scores higher to compensate for class imbalance. The model ranks correctly but overstates default probability in absolute terms.
+The negative Brier Skill Score reveals that while the model **discriminates** well (AUC = 0.75), its **predicted probabilities are inflated** — a known side effect of `class_weight='balanced'`. The model ranks correctly but overstates absolute default probability.
 
-**Production implication**: For rank-ordering and threshold-based decisions (approve/reject), AUC is the correct metric and the model performs well. For **risk-based pricing** — where the raw probability directly determines the interest rate charged — a calibration step (Platt scaling or isotonic regression) would be required before deployment to ensure the P&L calculations reflect true default rates.
+For rank-ordering and threshold decisions (approve/reject), AUC is the correct metric and the model performs well. For **risk-based pricing** where raw probability directly determines interest rate, a calibration step (Platt scaling or isotonic regression) would be required before deployment.
 
 ---
 
-## Fairness & Disparate Impact Analysis
+### Fairness & Disparate Impact Analysis
 
-US credit regulation (ECOA, Fair Housing Act) prohibits lending models that produce **disparate impact** on protected groups. We apply the **EEOC 80% rule**: a group with an approval rate below 80% of the best-approved group's rate is flagged — then cross-validated against actual default rates to distinguish risk-driven rejection from unjustified disparity.
+US credit regulation (ECOA, Fair Housing Act) prohibits lending models that produce **disparate impact** on protected groups. We apply the **EEOC 80% rule**: approval rate below 80% of the best-approved group triggers a flag, then cross-validated against actual default rates.
 
 ![Fairness Analysis](fig_21_fairness.png)
 
@@ -240,79 +275,31 @@ US credit regulation (ECOA, Fair Housing Act) prohibits lending models that prod
 | car | 82.4% | 15.5% | 1.00 (ref) | Low risk, high approval |
 | credit_card | 75.3% | 18.4% | 0.91 | Acceptable |
 | **debt_consolidation** | **65.7%** | **22.3%** | **0.80** | Borderline — warrants monitoring |
-| **small_business** | **48.9%** | **36.1%** | **0.59** | Below DI threshold, but justified |
+| **small_business** | **48.9%** | **36.1%** | **0.59** | Below DI threshold, risk-justified |
 
-**Key finding**: `small_business` falls below the 0.80 DI threshold (approval rate 48.9% vs 82.4% for car loans), but its actual default rate is **36.1% — more than twice the portfolio average**. The disparity is **risk-driven, not arbitrary**: the model is correctly identifying that small business loans carry substantially higher credit risk, consistent with SBA data showing ~50% of small businesses fail within 5 years.
-
-`debt_consolidation` (DI = 0.80, borderline) merits monitoring: its default rate (22.3%) is near the portfolio average, yet approval rates are lower. This may reflect correlated risk factors (e.g., high DTI) that the model correctly penalizes, but should be reviewed against protected-class proxies in a full fair lending audit.
+`small_business` falls below the 0.80 DI threshold, but its 36.1% actual default rate — more than twice the portfolio average — confirms the disparity is **risk-driven, not arbitrary**. `debt_consolidation` (DI = 0.80, borderline) merits monitoring against protected-class proxies in a full fair lending audit.
 
 ---
 
-## Feature Distribution Drift (PSI)
+### Feature Distribution Drift (PSI)
 
-**Population Stability Index (PSI)** is the banking industry standard for monitoring whether a deployed model's input features have shifted between training and scoring windows — a prerequisite for knowing when to retrain.
+**Population Stability Index (PSI)** is the banking standard for monitoring whether a deployed model's input features have shifted between training and scoring windows.
 
 ![Feature Drift](fig_22_feature_drift.png)
 
-All 15 top SHAP features show **PSI < 0.10** (stable), with the highest being `mo_sin_old_rev_tl_op` at 0.090. This indicates that the 2017–2018 borrower population observable characteristics are statistically similar to the 2007–2016 training population.
-
-**Implications**:
-- The OOT performance decline (AUC 0.75 vs ~0.77 on random split) is attributable to **economic and policy changes** in the lending environment, not feature distribution drift
-- The model does not require immediate retraining due to feature shift — the degradation is structural (different vintage, credit cycle) rather than distributional
-- In production, PSI monitoring would be automated on a monthly basis; the PSI = 0.25 threshold would trigger a retraining decision
+All 15 top SHAP features show **PSI < 0.10** (stable), with the highest being `mo_sin_old_rev_tl_op` at 0.090. The 2017–2018 borrower population is statistically similar to the 2007–2016 training population — the OOT performance decline is structural (different credit cycle), not distributional. In production, PSI monitoring would run monthly; PSI > 0.25 would trigger a retraining decision.
 
 ---
 
-## Feature Engineering
+## Limitations & Future Work
 
-Raw features were cleaned and augmented with five engineered variables that encode economic relationships:
-
-| Feature | Construction | Economic rationale |
-|---|---|---|
-| `loan_to_income` | `loan_amnt / (annual_inc + 1)` | Leverage ratio — how large is this obligation relative to annual earnings |
-| `installment_to_income` | `installment / (annual_inc / 12 + 1)` | Monthly cash flow burden — a more direct measure of repayment stress than DTI alone |
-| `credit_history_months` | Months from `earliest_cr_line` to `issue_d` | Duration of demonstrated credit management |
-| `term_months` | Parsed from `term` string | Numeric loan duration (36 or 60 months) |
-| `emp_length_yrs` | Parsed from `emp_length` string | Income stability proxy |
-
-**Dropped features**: 18 post-origination columns (payment history, recovery amounts) to prevent target leakage; 40+ joint application fields (>50% missing); free-text fields (url, desc, emp_title).
-
----
-
-## Methodology
-
-```
-Raw Data: 1.8M rows, 151 features
-    ↓ Filter: keep Fully Paid + Charged Off → 1,348,059 loans
-    ↓ Drop: leakage columns, >50% missing fields, free-text
-    ↓ Engineer: 5 new features (loan_to_income, installment_to_income, etc.)
-    ↓ Encode: 12 categorical features via Label Encoding
-    ↓ Impute: remaining NaN → column median
-    ↓ Split: temporal — train on 2007–2016, test on 2017–2018 (out-of-time validation)
-    ↓
-    Logistic Regression (balanced weights) → baseline AUC: 0.7334
-    Optuna (50 trials, TPE, 10% subsample) → XGBoost best params
-    Optuna (50 trials, TPE, 10% subsample) → LightGBM best params
-    ↓ Retrain both on full training set with best params
-    ↓
-    SHAP TreeExplainer → global importance (beeswarm) + dependence plots
-    KS Statistic → banking-standard score separation metric
-```
-
----
-
-## Interactive Demo (Streamlit)
-
-The pre-trained model is included in the repo (`lgbm_model.pkl`). Run the interactive demo without downloading the dataset or retraining:
-
-```bash
-git clone https://github.com/proverb27515/credit_risk_lending.git
-cd credit_risk_lending
-pip install -r requirements.txt
-streamlit run app.py
-```
-
-Enter loan amount, interest rate, FICO score, DTI, and other borrower details to receive a real-time credit decision with SHAP feature attribution.
+| Limitation | Detail |
+|---|---|
+| **Probability miscalibration** | `class_weight='balanced'` inflates predicted probabilities (BSS = −0.15). Risk-based pricing would require Platt scaling or isotonic regression before deployment. |
+| **KS gap (0.3571 vs 0.40+ threshold)** | Public Lending Club data lacks proprietary bureau tradelines, bank transaction history, and employment verification that institutional lenders use. Closing this gap requires non-public data sources. |
+| **Vintage truncation in test set** | The 2017–2018 holdout includes loans still performing at Q4 2018 cutoff — true OOT performance on fully resolved 2017–2018 cohorts is only measurable with post-2018 data. |
+| **Loan purpose ≠ protected class** | Purpose-based fairness analysis (EEOC 80% rule) is a proxy. A full fair lending audit requires actual protected-class attributes (race, gender, age) which are absent from this public dataset. |
+| **Single dataset, single platform** | Lending Club's marketplace structure differs from bank underwriting. Results generalize to similar fintech lending contexts but would need recalibration for traditional bank portfolios. |
 
 ---
 
@@ -342,4 +329,4 @@ jupyter notebook
 
 ## Skills Demonstrated
 
-`Machine Learning` · `Credit Risk Modeling` · `Hyperparameter Optimization (Optuna)` · `SHAP Interpretability` · `Feature Engineering` · `Class Imbalance Handling` · `Fairness Analysis (ECOA/EEOC)` · `Model Calibration` · `Feature Drift (PSI)` · `Economic Theory Application` · `Data Visualization` · `Streamlit` · `Python` · `XGBoost` · `LightGBM` · `Pandas` · `Scikit-learn`
+`Machine Learning` · `Credit Risk Modeling` · `Hyperparameter Optimization (Optuna)` · `SHAP Interpretability` · `Feature Engineering` · `Class Imbalance Handling` · `Fairness Analysis (ECOA/EEOC)` · `Model Calibration` · `Feature Drift (PSI)` · `Optimal Decision Threshold` · `Economic Theory Application` · `Out-of-Time Validation` · `Data Visualization` · `Streamlit` · `Python` · `XGBoost` · `LightGBM` · `Pandas` · `Scikit-learn`

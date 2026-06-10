@@ -3,6 +3,8 @@
 Predicting consumer loan default on **1.34 million real loan records** using interpretable machine learning.  
 **Stack**: Python · LightGBM · XGBoost · Optuna · SHAP · Scikit-learn · Streamlit · Pandas · Matplotlib
 
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://proverb27515-credit-risk.streamlit.app/)
+
 ---
 
 ## Key Findings
@@ -19,7 +21,9 @@ Predicting consumer loan default on **1.34 million real loan records** using int
 
 ## Interactive Demo (Streamlit)
 
-The pre-trained model (`lgbm_model.pkl`) is included in the repo — no dataset download or retraining required:
+**[Live demo →](https://proverb27515-credit-risk.streamlit.app/)** — no setup required, runs in the browser.
+
+To run locally with the pre-trained model (`lgbm_model.pkl`):
 
 ```bash
 git clone https://github.com/proverb27515/credit_risk_lending.git
